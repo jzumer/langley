@@ -33,15 +33,11 @@ BUMP_TYPE * CONCAT(BUMP_NAME, PUSH_POST) (BUMP_NAME * buff, uint32_t n) {
 			while(buff->lgt + n >= buff->cap) {
 				buff->cap *= 2;
 			}
-			BUMP_TYPE * new_buff = calloc(sizeof(BUMP_TYPE), buff->cap);
-			memcpy(new_buff, buff->data, sizeof(BUMP_TYPE) * prev_cap);
-			free(buff->data);
-			buff->data = new_buff;
+			buff->data = realloc(buff->data, buff->cap * sizeof(BUMP_TYPE));
 		}
 	}
 
 	buff->lgt += n;
-
 	return &(buff->data[buff->lgt-n]);
 }
 

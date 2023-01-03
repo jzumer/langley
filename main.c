@@ -87,7 +87,7 @@ int main() {
 		}
 		wprintf(L"\n");
 #endif
-		if(last) {
+		if(!quit && last) {
 			execute();
 			print();
 		}

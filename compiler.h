@@ -43,8 +43,22 @@ typedef struct Reloc {
 
 struct SymCell;
 
+typedef enum {
+	loc_reg,
+	loc_mem,
+	loc_stack,
+	loc_discard, // 'effect' in the ddcg paper
+} loc_t;
+
+typedef enum {
+	lab_none,
+	lab_true,
+	lab_true_false,
+} lab_t;
+
 typedef struct {
 	wchar_t* name;
+	loc_t loc_type;
 	uint64_t loc;
 } Symbol;
 
