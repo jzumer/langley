@@ -12,6 +12,8 @@ lab_t nolabel = lab_none;
 loc_t effect = loc_discard;
 loc_t reg = loc_reg;
 
+LocBuff locs = {};
+
 ByteBuff code_buff = {};
 ByteBuff data_buff = {};
 
@@ -222,8 +224,43 @@ void compile_mov(loc_t loc_type_to, uint64_t loc_to, loc_t loc_type_from, uint64
 				case loc_mem:
 					if(loc_from == loc_to) { break; }
 					codebyte(0x50);
-					compile_mov(loc_reg, 0, loc_mem, loc_from);
-					compile_mov(loc_mem, loc_to, loc_reg, 0);
+					uint64_t addr_reg = 1;
+					codebyte(0x50 + addr_reg);
+
+					codebyte(0x48);
+					codebyte(0xb8 + addr_reg);
+					code_reloc(code_buff.lgt, loc_from, 1, Reloc64, 0);
+					codebyte(0);
+					codebyte(0);
+					codebyte(0);
+					codebyte(0);
+					codebyte(0);
+					codebyte(0);
+					codebyte(0);
+					codebyte(0);
+
+					codebyte(0x48);
+					codebyte(0x8b);
+					codebyte(0x00 + addr_reg + 0 * 8);
+
+					codebyte(0x48);
+					codebyte(0xb8 + addr_reg);
+					code_reloc(code_buff.lgt, loc_to, 1, Reloc64, 0);
+					codebyte(0);
+					codebyte(0);
+					codebyte(0);
+					codebyte(0);
+					codebyte(0);
+					codebyte(0);
+					codebyte(0);
+					codebyte(0);
+
+					codebyte(0x48);
+					codebyte(0x89);
+					codebyte(0x00 + addr_reg + 0 * 8);
+
+					codebyte(0x58 + addr_reg);
+
 					codebyte(0x58);
 					break;
 				case loc_reg: {
@@ -260,13 +297,15 @@ void compile_mov(loc_t loc_type_to, uint64_t loc_to, loc_t loc_type_from, uint64
 
 void compile_value_jmp(loc_t loc_type, uint64_t loc, lab_t lab_type, uint64_t* lab0, uint64_t* lab1) {
 	if(lab_type != lab_none) {
+		LocRecord* rec = LocBuff_push(&locs, 1);
+		rec->lab_type = lab_cond;
 		switch(loc_type) {
 			case loc_reg:
 				codebyte(0x48);
 				codebyte(0x85);
 				codebyte(0xc0 + loc + loc * 8);
 				codebyte(0x0f);
-				codebyte(0x8e); // jle
+				codebyte(0x84); // jz (rel32)
 				*lab1 = code_buff.lgt;
 				codebyte(0);
 				codebyte(0);
@@ -293,7 +332,7 @@ void compile_value_jmp(loc_t loc_type, uint64_t loc, lab_t lab_type, uint64_t* l
 				codebyte(0x58);
 
 				codebyte(0x0f);
-				codebyte(0x8e); // jle
+				codebyte(0x84); // jz
 				*lab1 = code_buff.lgt;
 				codebyte(0);
 				codebyte(0);
@@ -302,6 +341,7 @@ void compile_value_jmp(loc_t loc_type, uint64_t loc, lab_t lab_type, uint64_t* l
 				*lab0 = code_buff.lgt;
 				break;
 			default:
+				LocBuff_pop(&locs, 1);
 				break;
 		}
 	}
@@ -396,11 +436,15 @@ void compile_fn(AST* ast, loc_t* loc_type, uint64_t* loc, lab_t* lab_type, uint6
 	codebyte(0);
 	uint64_t fn_loc = code_buff.lgt;
 	// Return location in call is rax, so loc is loc_reg, 0
-	compile_ast(ast->child1, &reg, 0, &nolabel, 0, 0);
+	uint64_t which_reg = 0;
+	compile_ast(ast->child1, &reg, &which_reg, &nolabel, 0, 0);
 	codebyte(0xc3);
 
 	f->loc = fn_loc;
 	code_reloc(rel, code_buff.lgt, 0, Reloc32, 1);
+
+	*loc_type = loc_mem;
+	*loc = fn_loc;
 
 	symbols = symb_start;
 }
@@ -428,17 +472,103 @@ void compile_call(AST* ast, loc_t* loc_type, uint64_t* loc, lab_t* lab_type, uin
 	return;
 }
 
+void compile_cond(AST* ast, loc_t* loc_type, uint64_t* loc, lab_t* lab_type, uint64_t* lab0, uint64_t* lab1) {
+	AST* cond = ast->child0;
+	AST* then = ast->child1;
+	AST* otherwise = then->next;
+	then->next = NULL; // XXX due to compile_ast doing follow-ups
+
+	lab_t this_lab = lab_cond;
+	uint64_t lab_true = 0;
+	uint64_t lab_false = 0;
+
+	compile_ast(cond, loc_type, loc, &this_lab, &lab_true, &lab_false);
+
+	compile_ast(then, loc_type, loc, &nolabel, lab0, lab1);
+	uint64_t end_loc = 0;
+	if(otherwise) {
+		codebyte(0xe9);
+		end_loc = code_buff.lgt;
+		codebyte(0);
+		codebyte(0);
+		codebyte(0);
+		codebyte(0);
+	}
+	uint64_t brfalse = code_buff.lgt;
+	if(otherwise) {
+		compile_ast(otherwise, loc_type, loc, &nolabel, lab0, lab1);
+		code_reloc(end_loc, code_buff.lgt, 0, Reloc32, 1);
+	}
+
+	if(lab_false) {
+		code_reloc(lab_false, brfalse, 0, Reloc32, 1);
+	}
+}
+
+void compile_loop(AST* ast, loc_t* loc_type, uint64_t* loc, lab_t* lab_type, uint64_t* lab0, uint64_t* lab1) {
+	uint64_t beg = code_buff.lgt;
+	lab_t my_lab = lab_loop;
+	uint64_t loc_start = locs.lgt;
+	compile_ast(ast->child0, loc_type, loc, &my_lab, lab0, lab1);
+	codebyte(0xe9);
+	uint64_t ret_jmp = code_buff.lgt;
+	codebyte(0);
+	codebyte(0);
+	codebyte(0);
+	codebyte(0);
+	code_reloc(ret_jmp, beg, 0, Reloc32, 1);
+
+	for(int64_t i = locs.lgt-1; i >= 0; i--) {
+		if(locs.data[i].lab_type == lab_loop) {
+			wprintf(L"Found reloc request (%d %d)\n", locs.data[i].lab0, locs.data[i].lab1);
+			if(locs.data[i].lab1) {
+				code_reloc(locs.data[i].lab1, code_buff.lgt, 0, Reloc32, 1);
+			}
+			if(locs.data[i].lab0) {
+				code_reloc(locs.data[i].lab0, beg, 0, Reloc32, 1);
+			}
+		}
+	}
+
+	LocBuff_pop(&locs, locs.lgt - loc_start);
+}
+
+void compile_break(AST* ast, loc_t* loc_type, uint64_t* loc, lab_t* lab_type, uint64_t* lab0, uint64_t* lab1) {
+	//if(*lab_type != lab_loop) {
+	//	ERROR(L"Encountered break outisde loop\n");
+	//}
+	codebyte(0xe9);
+	uint64_t ret_jmp = code_buff.lgt;
+	codebyte(0);
+	codebyte(0);
+	codebyte(0);
+	codebyte(0);
+
+	LocRecord* rec = LocBuff_push(&locs, 1);
+	rec->lab1 = ret_jmp;
+	rec->lab0 = 0;
+	rec->lab_type = lab_loop;
+}
+
 void compile_def(AST* ast, loc_t* loc_type, uint64_t* loc, lab_t* lab_type, uint64_t* lab0, uint64_t* lab1) {
 	AST* var = ast->child0;
 	AST* val = ast->child1;
 	Symbol* symb = SymBuff_push(&symbols->buff, 1);
 	symb->name = calloc(sizeof(wchar_t), wcslen((wchar_t*)var->data)+1);
 	wcscpy(symb->name, (wchar_t*)var->data);
-	symb->loc_type = loc_mem;
-	symb->loc = data_buff.lgt; // TODO: use regs and check if occupied and spill if so
-	// TODO 2: handle reg-mem 'dual location'
-	datau64(0);
-	compile_ast(ast->child1, &symb->loc_type, &symb->loc, &nolabel, lab0, lab1);
+	loc_t sloc_type = loc_mem;
+	uint64_t sloc = data_buff.lgt;
+	if(val->type != ast_fn) {
+		symb->loc_type = sloc_type;
+		symb->loc = sloc; // TODO: use regs and check if occupied and spill if so
+		// TODO 2: handle reg-mem 'dual location'
+		datau64(0);
+		compile_ast(ast->child1, &sloc_type, &sloc, &nolabel, lab0, lab1);
+	} else {
+		compile_ast(ast->child1, &sloc_type, &sloc, &nolabel, lab0, lab1);
+		symb->loc_type = sloc_type;
+		symb->loc = sloc;
+	}
 }
 
 uint8_t compile_ast(AST* ast, loc_t* loc_type, uint64_t* loc, lab_t* lab_type, uint64_t* lab0, uint64_t* lab1) {
@@ -446,6 +576,15 @@ uint8_t compile_ast(AST* ast, loc_t* loc_type, uint64_t* loc, lab_t* lab_type, u
 		case ast_none:
 			last = 0;
 			return 0;
+		case ast_cond:
+			compile_cond(ast, loc_type, loc, lab_type, lab0, lab1);
+			break;
+		case ast_loop:
+			compile_loop(ast, loc_type, loc, lab_type, lab0, lab1);
+			break;
+		case ast_break:
+			compile_break(ast, loc_type, loc, lab_type, lab0, lab1);
+			break;
 		case ast_def:
 				compile_def(ast, loc_type, loc, lab_type, lab0, lab1);
 				break;
@@ -463,6 +602,10 @@ uint8_t compile_ast(AST* ast, loc_t* loc_type, uint64_t* loc, lab_t* lab_type, u
 				break;
 		default:
 				ERROR(L"NO!\n");
+	}
+
+	if(ast->next) {
+		return compile_ast(ast->next, loc_type, loc, lab_type, lab0, lab1);
 	}
 	return 1;
 }

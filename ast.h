@@ -7,6 +7,7 @@ typedef enum ASTType {
 
 	ast_cond,
 	ast_loop,
+	ast_break,
 
 	ast_def,
 

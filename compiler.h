@@ -52,9 +52,21 @@ typedef enum {
 
 typedef enum {
 	lab_none,
-	lab_true,
-	lab_true_false,
+	lab_cond,
+	lab_loop,
 } lab_t;
+
+typedef struct LocRecord {
+	loc_t type;
+	uint64_t loc;
+	lab_t lab_type;
+	lab_t lab0;
+	lab_t lab1;
+} LocRecord;
+
+#define BUMP_TYPE LocRecord
+#define BUMP_NAME LocBuff
+#include "bump_interface.h"
 
 typedef struct {
 	wchar_t* name;

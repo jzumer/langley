@@ -39,3 +39,7 @@
 #define BUMP_TYPE FnRecord
 #define BUMP_NAME FnBuff
 #include "bump.h"
+
+#define BUMP_TYPE LocRecord
+#define BUMP_NAME LocBuff
+#include "bump.h"

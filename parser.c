@@ -112,14 +112,108 @@ void push_token(wchar_t* str, ssize_t lgt, ssize_t ch, ssize_t lin) {
 }
 
 AST* try_rule(wchar_t* rule) {
+#ifdef DEBUG
+	wprintf(L"Trying rule %ls...\n", rule);
+#endif
 	ssize_t this_token = current_token;
 	ssize_t ast_lgt = ast_buff.lgt;
 
 	AST* ret = do_rule(&rules, rule);
 	if(!ret) {
+#ifdef DEBUG
+	wprintf(L"Rule %ls FAIL\n", rule);
+#endif
 		current_token = this_token;
 		ASTBuff_pop(&ast_buff, ast_buff.lgt - ast_lgt);
 	}
+	return ret;
+}
+
+AST* cond() {
+	AST* ret = ASTBuff_push(&ast_buff, 1);
+
+	Token* tok = next_token();
+	if(!tok) { return NULL; }
+
+	if(wcscmp(tok->str, L"if") != 0) { return NULL; }
+
+	ret->type = ast_cond;
+	ret->data = tok->str;
+	ret->lin = tok->lin;
+	ret->ch = tok->ch;
+
+	AST* c = try_rule(L"expr");
+	if(!c) { return NULL; }
+
+	ret->child0 = c;
+
+	tok = next_token();
+	if(!tok) { return NULL; }
+
+	if(wcscmp(tok->str, L"then") != 0) { return NULL; }
+
+	AST* iftrue = try_rule(L"expr");
+	if(!iftrue) { return NULL; }
+	
+	tok = next_token();
+	if(!tok) { return NULL; }
+
+	ret->child1 = iftrue;
+
+	if(wcscmp(tok->str, L";") != 0) {
+		if(wcscmp(tok->str, L"else") == 0) {
+			AST* iffalse = try_rule(L"expr");
+			if(!iffalse) { return NULL; }
+
+			tok = next_token();
+			if(!tok) { return NULL; }
+
+			if(wcscmp(tok->str, L";") != 0) { return NULL; }
+
+			ret->child1->next = iffalse;
+
+			return ret;
+		} else {
+			return NULL;
+		}
+	} else {
+		return ret;
+	}
+}
+
+AST* loop() {
+	AST* ret = ASTBuff_push(&ast_buff, 1);
+
+	Token* tok = next_token();
+	if(!tok) { return NULL; }
+
+	if(wcscmp(tok->str, L"loop") != 0) { return NULL; }
+
+	ret->type = ast_loop;
+	ret->data = tok->str;
+	ret->lin = tok->lin;
+	ret->ch = tok->ch;
+
+	AST* e = try_rule(L"expr");
+	if(!e) { return NULL; }
+	ret->child0 = e;
+
+	return ret;
+}
+
+AST* brek() {
+	AST* ret = ASTBuff_push(&ast_buff, 1);
+	
+	Token* tok = next_token();
+	if(!tok) { return NULL; }
+
+	if(wcscmp(tok->str, L"break") != 0) { return NULL; }
+
+	ret->type = ast_break;
+	ret->data = tok->str;
+	ret->lin = tok->lin;
+	ret->ch = tok->ch;
+
 	return ret;
 }
 
@@ -335,8 +429,8 @@ AST* expr() {
 		}
 	}
 
-	uint8_t n_subrules = 6;
-	wchar_t* subrules[6] = {L"fn", L"str", L"call", L"number", L"name", L"infix"};
+	uint8_t n_subrules = 9;
+	wchar_t* subrules[9] = {L"fn", L"str", L"cond", L"loop", L"break", L"call", L"number", L"name", L"infix"};
 	for(uint8_t i = 0; i < n_subrules; i++) {
 		ret = try_rule(subrules[i]);
 		if(ret) {
@@ -390,6 +484,9 @@ void register_rules() {
 	add_rule(&rules, L"def", def);
 	add_rule(&rules, L"call", call);
 	add_rule(&rules, L"fn", fn);
+	add_rule(&rules, L"break", brek);
+	add_rule(&rules, L"loop", loop);
+	add_rule(&rules, L"cond", cond);
 	add_rule(&rules, L"stmt", stmt);
 	add_rule(&rules, L"expr", expr);
 	add_rule(&rules, L"program", program);

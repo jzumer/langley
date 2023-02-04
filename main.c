@@ -41,7 +41,7 @@ void execute() {
 #ifdef DEBUG
 		wprintf(L"Post-relocation code:\n");
 		for(uint8_t* i = codeptr; i < codeptr + (code_buff.lgt - (ssize_t)last); i++) {
-			wprintf(L"%x ", *i);
+			wprintf(L"%02X ", *i);
 			if(i - codeptr != 0 && (i - codeptr) % 8 == 0){
 				wprintf(L"\n");
 			}
@@ -82,7 +82,7 @@ int main() {
 #ifdef DEBUG
 		wprintf(L"Codeptr: %p; (delta: %d). Code:\n", codeptr, codeptr - code);
 		for(ssize_t i = 0; i < code_buff.lgt; i++) {
-			wprintf(L"%x ", code_buff.data[i]);
+			wprintf(L"%02X ", code_buff.data[i]);
 			if(i != 0 && i % 8 == 0) { wprintf(L"\n"); }
 		}
 		wprintf(L"\n");
