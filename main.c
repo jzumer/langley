@@ -15,51 +15,6 @@
 
 uint64_t ret = 0;
 
-void execute() {
-	if(last != NULL) {
-		if(mprotect(code, code_end - code, PROT_READ | PROT_WRITE) == -1) {
-			ERROR(L"mprotect to PROT_RW failed\n");
-		}
-		if(codeptr + (code_buff.lgt - (ssize_t)last) >= code_end) {
-			ssize_t a = (code_end - code) + (code_buff.lgt - (ssize_t)last);
-			ssize_t b = (code_end - code) * 2;
-			void* new_code = mmap(NULL, a > b? a:b, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
-			memcpy(new_code, code, code_end - code);
-			munmap(code, code_end - code);
-			ssize_t delta = codeptr - code;
-			ssize_t delta_lgt = code_end - code;
-			code = new_code;
-			code_end = code + delta_lgt;
-			codeptr = code + delta;
-
-			reset_reloc_ptrs();
-		}
-
-		relocate();
-		memcpy(codeptr, code_buff.data + (ssize_t)last, code_buff.lgt - (ssize_t)last);
-
-#ifdef DEBUG
-		wprintf(L"Post-relocation code:\n");
-		for(uint8_t* i = codeptr; i < codeptr + (code_buff.lgt - (ssize_t)last); i++) {
-			wprintf(L"%02X ", *i);
-			if(i - codeptr != 0 && (i - codeptr) % 8 == 0){
-				wprintf(L"\n");
-			}
-		}
-		wprintf(L"\n");
-#endif
-
-		if(mprotect(code, code_end - code, PROT_EXEC) == -1) {
-			ERROR(L"mprotect to PROT_EXEC failed\n");
-		}
-
-		void*(*fn)() = (void*(*)())codeptr;
-		ret = (uint64_t)fn();
-
-		codeptr += (code_buff.lgt - (ssize_t)last);
-	}
-}
-
 void print() {
 	wprintf(L"%d; OK\n", ret);
 }

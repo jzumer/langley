@@ -34,6 +34,11 @@ void datau64(uint64_t u64) {
 	*this = u64;
 }
 
+void datau32(uint64_t u32) {
+	uint32_t* this = (uint32_t*)(ByteBuff_push(&data_buff, 4));
+	*this = u32;
+}
+
 void databyte(uint8_t byte) {
 	*ByteBuff_push(&data_buff, 1) = byte;
 }
@@ -462,14 +467,63 @@ void compile_call(AST* ast, loc_t* loc_type, uint64_t* loc, lab_t* lab_type, uin
 
 	bind_args((SymCell*)fn_rec->env, rec->name, ast->child1);
 
-	codebyte(0xe9);
-	code_reloc(code_buff.lgt, rec->loc, 0, Reloc32, 1);
-	codebyte(0);
-	codebyte(0);
-	codebyte(0);
-	codebyte(0);
+	if(rec->loc & 0xffffffff00000000 == 0) {
+		codebyte(0xe8);
+		code_reloc(code_buff.lgt, rec->loc, 0, Reloc32, 1);
+		codebyte(0);
+		codebyte(0);
+		codebyte(0);
+		codebyte(0);
+	} else {
+		codebyte(0x49);
+		codebyte(0xba);
+		for(uint8_t i = 0; i < 8; i++) {
+			uint8_t off = (((uint64_t)rec->loc) >> (8 * i)) & 0xff;
+			codebyte(off);
+		}
+
+		codebyte(0x41);
+		codebyte(0xff);
+		codebyte(0xd2);
+	}
+
 	symbols = symb_start;
 	return;
+}
+
+void compile_str(AST* ast, loc_t* loc_type, uint64_t* loc, lab_t* lab_type, uint64_t* lab0, uint64_t* lab1) {
+	ssize_t lgt = ((uint64_t*)ast->data)[0] + 1;
+	wchar_t* str = ((wchar_t*)ast->data) + (sizeof(uint64_t) / sizeof(wchar_t));
+
+	uint64_t here = data_buff.lgt;
+	datau64(lgt);
+	for(ssize_t i = 0; i < lgt; i++) {
+		datau32(str[i]); // XXX: we "know" that wchar_t is 4 bytes
+	}
+	datau32(0);
+
+	wprintf(L"[%d] Contents in memory (%d): %ls\n", here, ((uint64_t*)(data_buff.data + here))[0], data_buff.data + here + sizeof(uint64_t));
+
+	switch(*loc_type) {
+		case loc_mem:
+			*loc = here;
+			break;
+		case loc_reg:
+			codebyte(0x48);
+			codebyte(0xb8 + *loc);
+			code_reloc(code_buff.lgt, here, 1, Reloc64, 0);
+			codebyte(0);
+			codebyte(0);
+			codebyte(0);
+			codebyte(0);
+			codebyte(0);
+			codebyte(0);
+			codebyte(0);
+			codebyte(0);
+			break;
+		default:
+			break;
+	}
 }
 
 void compile_cond(AST* ast, loc_t* loc_type, uint64_t* loc, lab_t* lab_type, uint64_t* lab0, uint64_t* lab1) {
@@ -576,6 +630,9 @@ uint8_t compile_ast(AST* ast, loc_t* loc_type, uint64_t* loc, lab_t* lab_type, u
 		case ast_none:
 			last = 0;
 			return 0;
+		case ast_str:
+			compile_str(ast, loc_type, loc, lab_type, lab0, lab1);
+			break;
 		case ast_cond:
 			compile_cond(ast, loc_type, loc, lab_type, lab0, lab1);
 			break;
@@ -629,6 +686,103 @@ void compile(uint8_t* eof) {
 	}
 }
 
+void register_fn(wchar_t* name, void*(*fn)(), uint8_t n_args, wchar_t** args) {
+	Symbol* symb = SymBuff_push(&symbols->buff, 1);
+	symb->name = calloc(sizeof(wchar_t), wcslen(name));
+	wcscpy(symb->name, name);
+	loc_t sloc_type = loc_mem;
+	symb->loc_type = loc_mem;
+	symb->loc = (uint64_t)fn;
+
+	SymCell* symb_start = symbols;
+
+	SymCell* fn_env = calloc(sizeof(SymCell), 1);
+	fn_env->prev = symbols;
+	symbols = fn_env;
+
+	FnRecord* f = FnBuff_push(&functions, 1);
+
+	f->env = fn_env;
+
+	f->n_args = n_args;
+	f->args = calloc(sizeof(Symbol), n_args);
+	for(ssize_t n = 0; n < n_args; n++) {
+		Symbol* this_arg = SymBuff_push(&symbols->buff, 1);
+		ssize_t name_lgt = wcslen(args[n]);
+		this_arg->name = calloc(sizeof(wchar_t), name_lgt+1);
+		wcscpy(this_arg->name, (wchar_t*)args[n]);
+		this_arg->loc = data_buff.lgt;
+		datau64(0);
+		f->args[n] = this_arg;
+	}
+
+	f->loc = (uint64_t)fn;
+
+	symbols = symb_start;
+}
+
+void printfn() {
+	register uint64_t what asm("rax");
+	uint64_t lgt = ((uint64_t*)what)[0];
+	wchar_t* str = (wchar_t*)what + sizeof(uint64_t) / sizeof(wchar_t);
+	wprintf(str);
+	wprintf(L"\n");
+}
+
+void update(uint8_t force) {
+	if(last != NULL || force) {
+		if(mprotect(code, code_end - code, PROT_READ | PROT_WRITE) == -1) {
+			ERROR(L"mprotect to PROT_RW failed\n");
+		}
+		if(codeptr + (code_buff.lgt - (ssize_t)last) >= code_end) {
+			ssize_t a = (code_end - code) + (code_buff.lgt - (ssize_t)last);
+			ssize_t b = (code_end - code) * 2;
+			void* new_code = mmap(NULL, a > b? a:b, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+			memcpy(new_code, code, code_end - code);
+			munmap(code, code_end - code);
+			ssize_t delta = codeptr - code;
+			ssize_t delta_lgt = code_end - code;
+			code = new_code;
+			code_end = code + delta_lgt;
+			codeptr = code + delta;
+
+			reset_reloc_ptrs();
+		}
+
+		relocate();
+		memcpy(codeptr, code_buff.data + (ssize_t)last, code_buff.lgt - (ssize_t)last);
+
+#ifdef DEBUG
+		wprintf(L"Post-relocation code:\n");
+		for(uint8_t* i = codeptr; i < codeptr + (code_buff.lgt - (ssize_t)last); i++) {
+			wprintf(L"%02X ", *i);
+			if(i - codeptr != 0 && (i - codeptr) % 8 == 0){
+				wprintf(L"\n");
+			}
+		}
+		wprintf(L"\n");
+#endif
+	}
+}
+
+uint64_t execute() {
+	update(0);
+	if(mprotect(code, code_end - code, PROT_EXEC) == -1) {
+		ERROR(L"mprotect to PROT_EXEC failed\n");
+	}
+
+	void*(*fn)() = (void*(*)())codeptr;
+	uint64_t ret = (uint64_t)fn();
+
+	codeptr += (code_buff.lgt - (ssize_t)last);
+
+	return ret;
+}
+
 void init_compiler() {
 	symbols = calloc(sizeof(SymCell), 1);
+
+	register_fn(L"print", (void*(*)())printfn, 1, (wchar_t*[1]){L"what"});
+
+	//update(1);
 }

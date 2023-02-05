@@ -24,6 +24,8 @@ void pop_tokens(ssize_t n) {
 ssize_t readtok(FILE* fd, wchar_t* buff, ssize_t max) {
 	ssize_t idx = 0;
 	uint8_t reading = 0;
+	uint8_t the_str = 0;
+	uint8_t str_esc = 0;
 
 	while(1) {
 		wchar_t next = fgetwc(fd);
@@ -33,14 +35,51 @@ ssize_t readtok(FILE* fd, wchar_t* buff, ssize_t max) {
 		else { curr_char++; }
 
 		if(iswspace(next)) {
-			if(reading) { break; }
+			if(!the_str && reading) { break; }
 		} else {
 			if(!reading) { reading = 1; }
 		}
 
 		if(reading) {
-			buff[idx] = next;
-			idx++;
+			if(the_str && !str_esc && (next == '\\')) {
+				str_esc = 1;
+			} else if(the_str && str_esc) {
+				switch(next) {
+					case '\\':
+						buff[idx] = '\\';
+						break;
+					case 'n':
+						buff[idx] = '\n';
+						break;
+					case 't':
+						buff[idx] = '\t';
+						break;
+					default:
+						ERROR(L"Invalid escape code: '\\%c'", next);
+				}
+				idx++;
+			} else if(the_str && (next == '"')) {
+				if(!str_esc) {
+					the_str = 0;
+					buff[idx] = '"';
+					idx++;
+				} else {
+					buff[idx] = next;
+					idx++;
+				}
+			} else if(!the_str && (next == '"')) {
+				the_str = 1;
+				buff[idx] = '"';
+				idx++;
+			} else {
+				buff[idx] = next;
+				idx++;
+			}
+
+			if(the_str && !str_esc && (next != '\\')) {
+				str_esc = 0;
+			}
+
 			if(idx > max) { break; }
 		}
 	}
@@ -126,6 +165,26 @@ AST* try_rule(wchar_t* rule) {
 		current_token = this_token;
 		ASTBuff_pop(&ast_buff, ast_buff.lgt - ast_lgt);
 	}
+	return ret;
+}
+
+AST* str() {
+	AST* ret = ASTBuff_push(&ast_buff, 1);
+
+	uint64_t val = 0;
+	Token* tok = next_token();
+	if(!tok) { return NULL; }
+	if(tok->size < 2 || tok->str[0] != '"' || tok->str[tok->size-1] != '"') { return NULL; }
+
+	ret->type = ast_str;
+	wchar_t* s = calloc((tok->size) * sizeof(wchar_t) + sizeof(uint64_t), 1);
+	((uint64_t*)s)[0] = tok->size - 3;
+	wcscpy(s+(sizeof(uint64_t) / sizeof(wchar_t)), tok->str+1);
+	s[tok->size + (sizeof(uint64_t) / sizeof(wchar_t)) - 2] = '\0';
+	ret->data = (void*)s;
+	ret->lin = tok->lin;
+	ret->ch = tok->ch;
+
 	return ret;
 }
 
@@ -230,35 +289,48 @@ AST* name() {
 	return ret;
 }
 
-AST* str() {
-	AST* ret = ASTBuff_push(&ast_buff, 1);
-	Token* tok = peek_token();
-	uint64_t str_lgt = 8 + 1;
-	wchar_t* str = NULL;
-	ssize_t lin = tok->lin;
-	ssize_t ch = tok->ch;
-	if(tok->str[0] == L'"') {
-		ssize_t lgt = wcslen(tok->str);
-		do {
-			tok = next_token();
-			uint8_t first = 1;
-			uint64_t str_mark = str_lgt;
-			str_lgt += lgt - 1;
-			str = realloc(str, str_lgt);
-			wcscpy(str + str_mark - 1, tok->str + first);
-			first = 0;
-		} while(tok && tok->str[lgt-1] != L'"');
-	} else { return NULL; }
-	if(!tok) { return NULL; }
-	str[str_lgt-1] = L'\0';
-	((uint64_t*)str)[0] = str_lgt - 8 - 1;
-	ret->data = str;
-	ret->lin = lin;
-	ret->ch = ch;
-	ret->type = ast_str;
-
-	return ret;
-}
+//AST* str() {
+//	AST* ret = ASTBuff_push(&ast_buff, 1);
+//	Token* tok = peek_token();
+//	uint64_t str_lgt = 8 / sizeof(wchar_t);
+//	wchar_t* str = NULL;
+//	ssize_t lin = tok->lin;
+//	ssize_t ch = tok->ch;
+//
+//	if(tok->str[0] == L'"') {
+//		next_token();
+//		ssize_t lgt = wcslen(tok->str)-2;
+//		uint64_t str_mark = str_lgt;
+//		str_lgt += lgt;
+//		str = realloc(str, str_lgt);
+//		wcscpy(str + str_mark, tok->str+1);
+//		wchar_t last_char = tok->str[lgt];
+//
+//		while(tok && last_char != L'"') {
+//			tok = next_token();
+//			lgt = wcslen(tok->str)-1;
+//			str_mark = str_lgt+1;
+//			str_lgt += lgt;
+//			wprintf(L"Old size = %d, New size = %d\n", str_mark, str_lgt);
+//			str = realloc(str, str_lgt);
+//			wprintf(L"REALLOC OK\n");
+//			wprintf(L"COPYING %ls\n", tok->str);
+//			wcscpy(str + str_mark, tok->str);
+//			wprintf(L"RESULT %ls\n", str + 2);
+//			last_char = tok->str[lgt-1];
+//		}
+//	} else { return NULL; }
+//	if(!tok) { return NULL; }
+//	str[str_lgt-1] = L'\0'; // last "char" is the final '"' marker. Erase for \0 instead.
+//	((uint64_t*)str)[0] = str_lgt - 8 / sizeof(wchar_t);
+//	wprintf(L"Got str of lgt %d (= %d) : '%ls'\n", str_lgt, ((uint64_t*)str)[0], str+2);
+//	ret->data = str;
+//	ret->lin = lin;
+//	ret->ch = ch;
+//	ret->type = ast_str;
+//
+//	return ret;
+//}
 
 AST* number() {
 	AST* ret = ASTBuff_push(&ast_buff, 1);
@@ -430,7 +502,7 @@ AST* expr() {
 	}
 
 	uint8_t n_subrules = 9;
-	wchar_t* subrules[9] = {L"fn", L"str", L"cond", L"loop", L"break", L"call", L"number", L"name", L"infix"};
+	wchar_t* subrules[9] = {L"str", L"fn", L"cond", L"loop", L"break", L"call", L"number", L"name", L"infix"};
 	for(uint8_t i = 0; i < n_subrules; i++) {
 		ret = try_rule(subrules[i]);
 		if(ret) {

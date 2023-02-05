@@ -5,6 +5,8 @@
 #include "ast.h"
 #include "parser.h"
 
+#include <sys/mman.h>
+
 #include <ctype.h>
 #include <stdint.h>
 #include <unistd.h>
@@ -114,3 +116,6 @@ extern uint8_t* code_end;
 
 extern SymCell* symbols;
 extern FnBuff functions;
+
+void update(uint8_t);
+uint64_t execute();
