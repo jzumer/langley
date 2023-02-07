@@ -283,6 +283,20 @@ AST* name() {
 
 	Token* tok = next_token();
 	if(!tok) { return NULL; }
+	if(tok->size == 1) {
+		switch(tok->str[0]) {
+			case L'(':
+			case L')':
+			case L'+':
+			case L'-':
+			case L'*':
+			case L'/':
+			case L'%':
+				return NULL;
+			default:
+				break;
+		}
+	}
 	ret->type = ast_var;
 	ret->data = tok->str;
 	ret->lin = tok->lin;
@@ -387,12 +401,12 @@ AST* call() {
 	AST* next_arg = NULL;
 
 	Token* paren = next_token();
-	if(!paren || wcscmp(paren->str, L"(") != 0) { return 0; }
+	if(!paren || wcscmp(paren->str, L"(") != 0) { return NULL; }
 	Token* latest = paren;
 
-	while(latest && wcscmp(latest->str, L")") != 0) {
+	while(latest) {
 		AST* ex = try_rule(L"infix-expr");
-		if(!ex) { return 0; }
+		if(!ex) { break; }
 		if(!next_arg) {
 			ret->child1 = next_arg = ex;
 		} else {
@@ -403,8 +417,9 @@ AST* call() {
 		if(!latest || wcscmp(latest->str, L",") != 0) { break; }
 	}
 
-	if(!latest) { return 0; }
-	if(wcscmp(latest->str, L")") != 0) { return 0; }
+	if(!latest) { return NULL; }
+	if(latest && wcscmp(latest->str, L"(") == 0) { latest = next_token(); }
+	if(!latest || wcscmp(latest->str, L")") != 0) { return NULL; }
 
 	return ret;
 }
@@ -518,8 +533,8 @@ AST* expr() {
 		}
 	}
 
-	uint8_t n_subrules = 9;
-	wchar_t* subrules[9] = {L"str", L"fn", L"cond", L"loop", L"break", L"call", L"number", L"name"};
+	uint8_t n_subrules = 8;
+	wchar_t* subrules[8] = {L"str", L"fn", L"cond", L"loop", L"break", L"call", L"number", L"name"};
 	for(uint8_t i = 0; i < n_subrules; i++) {
 		ret = try_rule(subrules[i]);
 		if(ret) {

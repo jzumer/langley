@@ -607,22 +607,27 @@ void compile_break(AST* ast, loc_t* loc_type, uint64_t* loc, lab_t* lab_type, ui
 void compile_def(AST* ast, loc_t* loc_type, uint64_t* loc, lab_t* lab_type, uint64_t* lab0, uint64_t* lab1) {
 	AST* var = ast->child0;
 	AST* val = ast->child1;
+
 	Symbol* symb = SymBuff_push(&symbols->buff, 1);
 	symb->name = calloc(sizeof(wchar_t), wcslen((wchar_t*)var->data)+1);
 	wcscpy(symb->name, (wchar_t*)var->data);
+
 	loc_t sloc_type = loc_mem;
 	uint64_t sloc = data_buff.lgt;
+	datau64(0);
+
 	if(val->type != ast_fn) {
 		symb->loc_type = sloc_type;
 		symb->loc = sloc; // TODO: use regs and check if occupied and spill if so
 		// TODO 2: handle reg-mem 'dual location'
-		datau64(0);
-		compile_ast(ast->child1, &sloc_type, &sloc, &nolabel, lab0, lab1, 1);
+		compile_ast(val, &sloc_type, &sloc, &nolabel, lab0, lab1, 1);
 	} else {
-		compile_ast(ast->child1, &sloc_type, &sloc, &nolabel, lab0, lab1, 1);
+		compile_ast(val, &sloc_type, &sloc, &nolabel, lab0, lab1, 1);
 		symb->loc_type = sloc_type;
 		symb->loc = sloc;
 	}
+
+	compile_mov(*loc_type, *loc, sloc_type, sloc);
 }
 
 uint8_t compile_ast(AST* ast, loc_t* loc_type, uint64_t* loc, lab_t* lab_type, uint64_t* lab0, uint64_t* lab1, uint8_t compile_next) {
@@ -782,6 +787,79 @@ void printfn() {
 	wprintf(L"\n");
 }
 
+void printhexfn() {
+	//register uint64_t what asm("rax");
+	FnRecord* self = find_fn(symbols, L"printhex");
+	uint64_t* what = (uint64_t*)(data_buff.data + self->args[0]->loc);
+	wprintf(L"%llX\n", what[0]);
+}
+
+void reservefn() {
+	register uint64_t ret asm("rax");
+
+	FnRecord* self = find_fn(symbols, L"reserve");
+	uint64_t* lhs = (uint64_t*)(data_buff.data + self->args[0]->loc);
+
+	uint64_t out = (uint64_t)calloc(lhs[0], 1);
+
+	ret = out;
+}
+
+void reserve64fn() {
+	register uint64_t ret asm("rax");
+
+	FnRecord* self = find_fn(symbols, L"reserve64");
+	uint64_t* lhs = (uint64_t*)(data_buff.data + self->args[0]->loc);
+
+	uint64_t out = (uint64_t)calloc(lhs[0], 8);
+
+	ret = out;
+}
+
+void get64fn() {
+	register uint64_t ret asm("rax");
+
+	FnRecord* self = find_fn(symbols, L"get64");
+	uint64_t* arr = (uint64_t*)(data_buff.data + self->args[0]->loc);
+	uint64_t* idx = (uint64_t*)(data_buff.data + self->args[1]->loc);
+
+	ret = ((uint64_t*)(arr[0]))[idx[0]];
+}
+
+void set64fn() {
+	FnRecord* self = find_fn(symbols, L"set64");
+	uint64_t* arr = (uint64_t*)(data_buff.data + self->args[0]->loc);
+	uint64_t* idx = (uint64_t*)(data_buff.data + self->args[1]->loc);
+	uint64_t* val = (uint64_t*)(data_buff.data + self->args[2]->loc);
+
+	((uint64_t*)(arr[0]))[idx[0]] = val[0];
+}
+
+void getfn() {
+	register uint64_t ret asm("rax");
+
+	FnRecord* self = find_fn(symbols, L"get");
+	uint64_t* arr = (uint64_t*)(data_buff.data + self->args[0]->loc);
+	uint64_t* idx = (uint64_t*)(data_buff.data + self->args[1]->loc);
+
+	ret = ((uint8_t*)(arr[0]))[idx[0]];
+}
+
+void setfn() {
+	FnRecord* self = find_fn(symbols, L"set");
+	uint64_t* arr = (uint64_t*)(data_buff.data + self->args[0]->loc);
+	uint64_t* idx = (uint64_t*)(data_buff.data + self->args[1]->loc);
+	uint64_t* val = (uint64_t*)(data_buff.data + self->args[2]->loc);
+
+	((uint8_t*)(arr[0]))[idx[0]] = val[0];
+}
+
+void freefn() {
+	FnRecord* self = find_fn(symbols, L"free");
+	uint64_t* arr = (uint64_t*)(data_buff.data + self->args[0]->loc);
+	free((uint8_t*)(arr[0]));
+}
+
 void loadfn() {
 	//register uint64_t what asm("rax");
 	FnRecord* self = find_fn(symbols, L"load");
@@ -862,6 +940,7 @@ void init_compiler() {
 	symbols = calloc(sizeof(SymCell), 1);
 
 	register_fn(L"print", (void*(*)())printfn, 1, (wchar_t*[1]){L"what"});
+	register_fn(L"printhex", (void*(*)())printhexfn, 1, (wchar_t*[1]){L"what"});
 	register_fn(L"load", (void*(*)())loadfn, 1, (wchar_t*[1]){L"what"});
 
 	register_fn(L"%", (void*(*)())modfn, 2, (wchar_t*[2]){L"lhs", L"rhs"});
@@ -869,6 +948,14 @@ void init_compiler() {
 	register_fn(L"*", (void*(*)())mulfn, 2, (wchar_t*[2]){L"lhs", L"rhs"});
 	register_fn(L"-", (void*(*)())subfn, 2, (wchar_t*[2]){L"lhs", L"rhs"});
 	register_fn(L"+", (void*(*)())addfn, 2, (wchar_t*[2]){L"lhs", L"rhs"});
+
+	register_fn(L"reserve", (void*(*)())reservefn, 1, (wchar_t*[1]){L"what"});
+	register_fn(L"reserve64", (void*(*)())reserve64fn, 1, (wchar_t*[1]){L"what"});
+	register_fn(L"free", (void*(*)())freefn, 1, (wchar_t*[1]){L"what"});
+	register_fn(L"get", (void*(*)())getfn, 2, (wchar_t*[2]){L"arr", L"idx"});
+	register_fn(L"get64", (void*(*)())get64fn, 2, (wchar_t*[2]){L"arr", L"idx"});
+	register_fn(L"set", (void*(*)())setfn, 3, (wchar_t*[3]){L"arr", L"idx", L"val"});
+	register_fn(L"set64", (void*(*)())set64fn, 3, (wchar_t*[3]){L"arr", L"idx", L"val"});
 
 	//update(1);
 }
