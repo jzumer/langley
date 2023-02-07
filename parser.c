@@ -3,6 +3,8 @@
 ssize_t curr_line = 1;
 ssize_t curr_char = 1;
 
+FILE* curr_file;
+
 CharBuff program_strings = {};
 ASTBuff ast_buff = {};
 
@@ -106,7 +108,7 @@ Token* next_token() {
 		uint8_t new = 1;
 		while(1) {
 			memset(tmp_buff, 0, batch_size);
-			ssize_t n_read = readtok(stdin, tmp_buff, batch_size-1);
+			ssize_t n_read = readtok(curr_file, tmp_buff, batch_size-1);
 
 			if(n_read == 0) {
 				break;
@@ -201,7 +203,7 @@ AST* cond() {
 	ret->lin = tok->lin;
 	ret->ch = tok->ch;
 
-	AST* c = try_rule(L"expr");
+	AST* c = try_rule(L"infix-expr");
 	if(!c) { return NULL; }
 
 	ret->child0 = c;
@@ -211,7 +213,7 @@ AST* cond() {
 
 	if(wcscmp(tok->str, L"then") != 0) { return NULL; }
 
-	AST* iftrue = try_rule(L"expr");
+	AST* iftrue = try_rule(L"infix-expr");
 	if(!iftrue) { return NULL; }
 	
 	tok = next_token();
@@ -221,7 +223,7 @@ AST* cond() {
 
 	if(wcscmp(tok->str, L";") != 0) {
 		if(wcscmp(tok->str, L"else") == 0) {
-			AST* iffalse = try_rule(L"expr");
+			AST* iffalse = try_rule(L"infix-expr");
 			if(!iffalse) { return NULL; }
 
 			tok = next_token();
@@ -253,7 +255,7 @@ AST* loop() {
 	ret->lin = tok->lin;
 	ret->ch = tok->ch;
 
-	AST* e = try_rule(L"expr");
+	AST* e = try_rule(L"infix-expr");
 	if(!e) { return NULL; }
 	ret->child0 = e;
 
@@ -363,7 +365,7 @@ AST* def() {
 	if(!var) { return 0; }
 	Token* eq = next_token();
 	if(!eq || wcscmp(eq->str, L":=") != 0) { return 0; }
-	AST* val = try_rule(L"expr");
+	AST* val = try_rule(L"infix-expr");
 	if(!val) { return 0; }
 
 	AST* ret = ASTBuff_push(&ast_buff, 1);
@@ -389,7 +391,7 @@ AST* call() {
 	Token* latest = paren;
 
 	while(latest && wcscmp(latest->str, L")") != 0) {
-		AST* ex = try_rule(L"expr");
+		AST* ex = try_rule(L"infix-expr");
 		if(!ex) { return 0; }
 		if(!next_arg) {
 			ret->child1 = next_arg = ex;
@@ -411,16 +413,18 @@ AST* infix() {
 	AST* lhs = try_rule(L"expr");
 	if(!lhs) { return NULL; }
 	Token* maybe_op = next_token();
+	if(maybe_op->size != 1) { return NULL; }
 	switch(maybe_op->str[0]) {
 		case L'*':
 		case L'/':
 		case L'-':
 		case L'+':
+		case L'%':
 			break;
 		default:
 			return NULL;
 	}
-	AST* rhs = try_rule(L"expr");
+	AST* rhs = try_rule(L"infix-expr");
 	if(!rhs) { return NULL; }
 
 	AST* ret = ASTBuff_push(&ast_buff, 1);
@@ -465,11 +469,24 @@ AST* fn() {
 	if(!latest) { return 0; }
 	if(wcscmp(latest->str, L"|") != 0) { return 0; }
 
-	AST* ex = try_rule(L"expr");
+	AST* ex = try_rule(L"infix-expr");
 	if(!ex) { return 0; }
 	ret->child1 = ex;
 
 	return ret;
+}
+
+AST* infix_expr() {
+	uint8_t n_subrules = 2;
+	wchar_t* subrules[2] = {L"infix", L"expr"};
+	for(uint8_t i = 0; i < n_subrules; i++) {
+		AST* ret = try_rule(subrules[i]);
+		if(ret) {
+			return ret;
+		}
+	}
+
+	return NULL;
 }
 
 AST* expr() {
@@ -502,7 +519,7 @@ AST* expr() {
 	}
 
 	uint8_t n_subrules = 9;
-	wchar_t* subrules[9] = {L"str", L"fn", L"cond", L"loop", L"break", L"call", L"number", L"name", L"infix"};
+	wchar_t* subrules[9] = {L"str", L"fn", L"cond", L"loop", L"break", L"call", L"number", L"name"};
 	for(uint8_t i = 0; i < n_subrules; i++) {
 		ret = try_rule(subrules[i]);
 		if(ret) {
@@ -526,7 +543,7 @@ AST* nothing() {
 AST* stmt() {
 	AST* ret = try_rule(L"def");
 	if(ret) { goto check_sc; }
-	ret = try_rule(L"expr");
+	ret = try_rule(L"infix-expr");
 	if(ret) { goto check_sc; }
 	return NULL;
 
@@ -561,5 +578,6 @@ void register_rules() {
 	add_rule(&rules, L"cond", cond);
 	add_rule(&rules, L"stmt", stmt);
 	add_rule(&rules, L"expr", expr);
+	add_rule(&rules, L"infix-expr", infix_expr);
 	add_rule(&rules, L"program", program);
 }

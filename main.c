@@ -3,6 +3,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <wchar.h>
+#include <locale.h>
 
 #include <unistd.h>
 
@@ -13,15 +14,12 @@
 #include "parser.h"
 #include "types.h"
 
-uint64_t ret = 0;
-
-void print() {
-	wprintf(L"%d; OK\n", ret);
-}
-
 uint8_t quit = 0;
 
 int main() {
+	curr_file = stdin;
+
+	setlocale(LC_ALL, "en_US.utf8");
 	ByteBuff_push(&code_buff, 1); // hack to start 'last' at 1 if we do compile
 
 	register_rules();
@@ -43,8 +41,8 @@ int main() {
 		wprintf(L"\n");
 #endif
 		if(!quit && last) {
-			execute();
-			print();
+			uint64_t ret = execute();
+			print(ret);
 		}
 	}
 

@@ -31,3 +31,4 @@ ssize_t readtok(FILE* fd, wchar_t* buff, ssize_t max);
 Token* next_token();
 
 extern TokenBuff tokens;
+extern FILE* curr_file;
