@@ -32,3 +32,7 @@ Token* next_token();
 
 extern TokenBuff tokens;
 extern FILE* curr_file;
+extern wchar_t* curr_fname;
+extern wchar_t* fname_repl;
+extern ssize_t curr_char;
+extern ssize_t curr_line;

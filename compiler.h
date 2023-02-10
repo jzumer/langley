@@ -1,5 +1,7 @@
 #pragma once
 
+#include <signal.h>
+
 #include "util.h"
 #include "string.h"
 #include "ast.h"

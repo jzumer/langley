@@ -8,6 +8,8 @@ uint8_t* code_end;
 
 void* last = 0;
 
+uint8_t n_regs = 8; // but 4 = rsp and 5 = rbp are forbidden
+
 lab_t nolabel = lab_none;
 loc_t effect = loc_discard;
 loc_t reg = loc_reg;
@@ -148,22 +150,37 @@ FnRecord* find_fn(SymCell* cell, wchar_t* name) {
 
 uint8_t compile_ast(AST* ast, loc_t* loc_type, uint64_t* loc, lab_t* lab_type, uint64_t* lab0, uint64_t* lab1, uint8_t compile_next);
 
-uint8_t current_register = 0;
-uint8_t reg_used = 0;
+void spill_args(SymCell* env, wchar_t* fn_name) {
+	FnRecord* fn = find_fn(env, fn_name);
+	if(!fn) {
+		ERROR(L"Not a function: '%ls'\n", fn_name);
+		return;
+	}
 
-uint8_t next_register() {
-	current_register = (current_register+1) % 8;
-	return (reg_used & (1 << current_register));
+	for(uint32_t i = 0; i < fn->n_args; i++) {
+		Symbol* rec = find_symb(env, (wchar_t*)fn->args[i]->name);
+		if(rec && rec->loc_type == loc_reg) {
+			codebyte(0x50 + rec->loc);
+		}
+	}
 }
 
-uint8_t reset_register() {
-	current_register = 0;
-	return (reg_used & 1);
+void restore_args(SymCell* env, wchar_t* fn_name) {
+	FnRecord* fn = find_fn(env, fn_name);
+	if(!fn) {
+		ERROR(L"Not a function: '%ls'\n", fn_name);
+		return;
+	}
+
+	for(int32_t i = fn->n_args-1; i >= 0; i--) {
+		Symbol* rec = find_symb(env, (wchar_t*)fn->args[i]->name);
+		if(rec && rec->loc_type == loc_reg) {
+			codebyte(0x58 + rec->loc);
+		}
+	}
 }
 
 void bind_args(SymCell* env, wchar_t* fn_name, AST* args) {
-	uint8_t eof = 0;
-
 	FnRecord* fn = find_fn(env, fn_name);
 	if(!fn) {
 		ERROR(L"Not a function: '%ls'\n", fn_name);
@@ -198,7 +215,10 @@ void compile_mov(loc_t loc_type_to, uint64_t loc_to, loc_t loc_type_from, uint64
 					codebyte(0xc0 + loc_to + 8 * loc_from);
 					break;
 				case loc_mem: {
-					uint64_t addr_reg = (loc_to + 1) % 8;
+					uint64_t addr_reg = (loc_to + 1) % n_regs;
+					while(addr_reg == 4 || addr_reg == 5) /* rsp and rbp are forbidden */ {
+						addr_reg++;
+					}
 					codebyte(0x50 + addr_reg);
 
 					codebyte(0x48);
@@ -269,7 +289,11 @@ void compile_mov(loc_t loc_type_to, uint64_t loc_to, loc_t loc_type_from, uint64
 					codebyte(0x58);
 					break;
 				case loc_reg: {
-					uint64_t addr_reg = (loc_from + 1) % 8;
+					uint64_t addr_reg = (loc_from + 1) % n_regs;
+					while(addr_reg == 4 || addr_reg == 5) /* rsp and rbp are forbidden */ {
+						addr_reg++;
+					}
+
 					codebyte(0x50 + addr_reg);
 
 					codebyte(0x48);
@@ -421,14 +445,20 @@ void compile_fn(AST* ast, loc_t* loc_type, uint64_t* loc, lab_t* lab_type, uint6
 	f->args = calloc(sizeof(Symbol), n);
 	arg = args;
 	n = 0;
+	uint8_t next_reg = 0;
 	while(arg) {
 		Symbol* this_arg = SymBuff_push(&symbols->buff, 1);
 		ssize_t name_lgt = wcslen((wchar_t*)arg->data);
 		this_arg->name = calloc(sizeof(wchar_t), name_lgt);
 		wcscpy(this_arg->name, (wchar_t*)arg->data);
-		this_arg->loc = data_buff.lgt;
-		this_arg->loc_type = loc_mem;
-		datau64(0);
+		this_arg->loc = next_reg; //data_buff.lgt;
+		this_arg->loc_type = loc_reg; //loc_mem
+		//datau64(0);
+		next_reg = (next_reg + 1) % n_regs;
+		while(next_reg == 4 || next_reg == 5) /* rsp and rbp are forbidden */ {
+			next_reg++;
+		}
+
 		f->args[n] = this_arg;
 		arg = arg->next;
 		n++;
@@ -456,7 +486,6 @@ void compile_fn(AST* ast, loc_t* loc_type, uint64_t* loc, lab_t* lab_type, uint6
 }
 
 void compile_call(AST* ast, loc_t* loc_type, uint64_t* loc, lab_t* lab_type, uint64_t* lab0, uint64_t* lab1) {
-	SymCell* symb_start = symbols;
 	Symbol* rec = find_symb(symbols, (wchar_t*)ast->child0->data);
 	if(!rec) {
 		ERROR(L"Name not found: '%ls'\n", (wchar_t*)ast->child0->data);
@@ -466,7 +495,15 @@ void compile_call(AST* ast, loc_t* loc_type, uint64_t* loc, lab_t* lab_type, uin
 		ERROR(L"Not a function: '%ls'\n", rec->name);
 	}
 
+	//codebyte(0x50);
+	spill_args((SymCell*)fn_rec->env, rec->name);
 	bind_args((SymCell*)fn_rec->env, rec->name, ast->child1);
+
+	// save rbp
+	codebyte(0x55);
+	codebyte(0x48);
+	codebyte(0x89);
+	codebyte(0xe5);
 
 	if((rec->loc & 0xffffffff00000000) == 0) {
 		codebyte(0xe8);
@@ -488,11 +525,35 @@ void compile_call(AST* ast, loc_t* loc_type, uint64_t* loc, lab_t* lab_type, uin
 		codebyte(0xd2);
 	}
 
-	// Move result from rax to the desired location
-	compile_mov(*loc_type, *loc, loc_reg, 0);
+	// Restore stack
+	codebyte(0x48);
+	codebyte(0x89);
+	codebyte(0xec);
 
-	symbols = symb_start;
-	return;
+	codebyte(0x5d);
+
+	// Move result on r11 so we can restore registers before moving the returned value back to rax
+	codebyte(0x49);
+	codebyte(0x89);
+	codebyte(0xc3);
+	if(lab0 && lab1) {
+		compile_value_jmp(*loc_type, *loc, *lab_type, lab0, lab1);
+	}
+	restore_args((SymCell*)fn_rec->env, rec->name);
+
+	// we have to bypass normal compile_mov since we use r11 here and we didn't implement it there.
+	if(*loc_type != loc_reg) {
+		codebyte(0x4c);
+		codebyte(0x89);
+		codebyte(0xd8);
+		compile_mov(*loc_type, *loc, loc_reg, 0);
+	} else {
+		codebyte(0x4c);
+		codebyte(0x89);
+		codebyte(0xd8 + *loc);
+	}
+
+	//codebyte(0x58);
 }
 
 void compile_str(AST* ast, loc_t* loc_type, uint64_t* loc, lab_t* lab_type, uint64_t* lab0, uint64_t* lab1) {
@@ -588,9 +649,14 @@ void compile_loop(AST* ast, loc_t* loc_type, uint64_t* loc, lab_t* lab_type, uin
 }
 
 void compile_break(AST* ast, loc_t* loc_type, uint64_t* loc, lab_t* lab_type, uint64_t* lab0, uint64_t* lab1) {
-	//if(*lab_type != lab_loop) {
-	//	ERROR(L"Encountered break outisde loop\n");
-	//}
+	// Restore stack
+	codebyte(0x48);
+	codebyte(0x89);
+	codebyte(0xec);
+
+	codebyte(0x5d);
+
+	// jump
 	codebyte(0xe9);
 	uint64_t ret_jmp = code_buff.lgt;
 	codebyte(0);
@@ -608,21 +674,23 @@ void compile_def(AST* ast, loc_t* loc_type, uint64_t* loc, lab_t* lab_type, uint
 	AST* var = ast->child0;
 	AST* val = ast->child1;
 
-	Symbol* symb = SymBuff_push(&symbols->buff, 1);
-	symb->name = calloc(sizeof(wchar_t), wcslen((wchar_t*)var->data)+1);
-	wcscpy(symb->name, (wchar_t*)var->data);
-
+	Symbol* symb = find_symb(symbols, (wchar_t*)var->data);
 	loc_t sloc_type = loc_mem;
 	uint64_t sloc = data_buff.lgt;
-	datau64(0);
-
-	if(val->type != ast_fn) {
+	if(!symb) {
+		Symbol* symb = SymBuff_push(&symbols->buff, 1);
+		symb->name = calloc(sizeof(wchar_t), wcslen((wchar_t*)var->data)+1);
+		wcscpy(symb->name, (wchar_t*)var->data);
+		datau64(0);
 		symb->loc_type = sloc_type;
-		symb->loc = sloc; // TODO: use regs and check if occupied and spill if so
-		// TODO 2: handle reg-mem 'dual location'
-		compile_ast(val, &sloc_type, &sloc, &nolabel, lab0, lab1, 1);
+		symb->loc = sloc;
 	} else {
-		compile_ast(val, &sloc_type, &sloc, &nolabel, lab0, lab1, 1);
+		sloc_type = symb->loc_type;
+		sloc = symb->loc;
+	}
+
+	compile_ast(val, &sloc_type, &sloc, &nolabel, lab0, lab1, 1);
+	if(val->type == ast_fn) {
 		symb->loc_type = sloc_type;
 		symb->loc = sloc;
 	}
@@ -685,10 +753,6 @@ void compile(uint8_t* eof) {
 	} else {
 		ERROR(L"Syntax error\n");
 	}
-
-	if(last) {
-		codebyte(0xc3);
-	}
 }
 
 void register_fn(wchar_t* name, void*(*fn)(), uint8_t n_args, wchar_t** args) {
@@ -711,14 +775,17 @@ void register_fn(wchar_t* name, void*(*fn)(), uint8_t n_args, wchar_t** args) {
 
 	f->n_args = n_args;
 	f->args = calloc(sizeof(Symbol), n_args);
+	uint8_t next_reg = 0;
 	for(ssize_t n = 0; n < n_args; n++) {
 		Symbol* this_arg = SymBuff_push(&symbols->buff, 1);
 		ssize_t name_lgt = wcslen(args[n]);
 		this_arg->name = calloc(sizeof(wchar_t), name_lgt+1);
 		wcscpy(this_arg->name, (wchar_t*)args[n]);
-		this_arg->loc = data_buff.lgt;
-		this_arg->loc_type = loc_mem;
-		datau64(0);
+		this_arg->loc = next_reg;
+		next_reg = (next_reg + 1) % n_regs;
+		//this_arg->loc = data_buff.lgt;
+		this_arg->loc_type = loc_reg; // loc_mem
+		//datau64(0);
 		f->args[n] = this_arg;
 	}
 
@@ -728,59 +795,65 @@ void register_fn(wchar_t* name, void*(*fn)(), uint8_t n_args, wchar_t** args) {
 }
 
 void modfn() {
-	register uint64_t ret asm("rax");
+	register int64_t lhs asm("rax");
+	register int64_t rhs asm("rcx");
 
-	FnRecord* self = find_fn(symbols, L"%");
-	uint64_t* lhs = (uint64_t*)(data_buff.data + self->args[0]->loc);
-	uint64_t* rhs = (uint64_t*)(data_buff.data + self->args[1]->loc);
-
-	ret = lhs[0] % rhs[0];
+	lhs %= rhs;
 }
 
 void divfn() {
-	register uint64_t ret asm("rax");
+	register int64_t lhs asm("rax");
+	register int64_t rhs asm("rcx");
 
-	FnRecord* self = find_fn(symbols, L"/");
-	uint64_t* lhs = (uint64_t*)(data_buff.data + self->args[0]->loc);
-	uint64_t* rhs = (uint64_t*)(data_buff.data + self->args[1]->loc);
-
-	ret = lhs[0] / rhs[0];
+	lhs /= rhs;
 }
 
 void mulfn() {
-	register uint64_t ret asm("rax");
+	register int64_t lhs asm("rax");
+	register int64_t rhs asm("rcx");
 
-	FnRecord* self = find_fn(symbols, L"*");
-	uint64_t* lhs = (uint64_t*)(data_buff.data + self->args[0]->loc);
-	uint64_t* rhs = (uint64_t*)(data_buff.data + self->args[1]->loc);
-
-	ret = lhs[0] * rhs[0];
+	lhs *= rhs;
 }
 
 void subfn() {
-	register uint64_t ret asm("rax");
+	register int64_t lhs asm("rax");
+	register int64_t rhs asm("rcx");
 
-	FnRecord* self = find_fn(symbols, L"-");
-	uint64_t* lhs = (uint64_t*)(data_buff.data + self->args[0]->loc);
-	uint64_t* rhs = (uint64_t*)(data_buff.data + self->args[1]->loc);
-
-	ret = lhs[0] - rhs[0];
+	lhs -= rhs;
 }
 
 void addfn() {
-	register uint64_t ret asm("rax");
+	register int64_t lhs asm("rax");
+	register int64_t rhs asm("rcx");
 
-	FnRecord* self = find_fn(symbols, L"+");
-	uint64_t* lhs = (uint64_t*)(data_buff.data + self->args[0]->loc);
-	uint64_t* rhs = (uint64_t*)(data_buff.data + self->args[1]->loc);
+	lhs += rhs;
+}
 
-	ret = lhs[0] + rhs[0];
+void ltfn() {
+	register int64_t lhs asm("rax");
+	register int64_t rhs asm("rcx");
+
+	lhs = lhs < rhs;
+}
+
+void gtfn() {
+	register int64_t lhs asm("rax");
+	register int64_t rhs asm("rcx");
+
+	lhs = lhs > rhs;
+}
+
+void eqfn() {
+	register int64_t lhs asm("rax");
+	register int64_t rhs asm("rcx");
+
+	lhs = lhs == rhs;
 }
 
 void printfn() {
-	//register uint64_t what asm("rax");
-	FnRecord* self = find_fn(symbols, L"print");
-	uint8_t* what = data_buff.data + self->args[0]->loc;
+	register wchar_t* what asm("rax");
+	//FnRecord* self = find_fn(symbols, L"print");
+	//uint8_t* what = data_buff.data + self->args[0]->loc;
 	uint64_t lgt = ((uint64_t*)what)[0];
 	wchar_t* str = (wchar_t*)what + sizeof(uint64_t) / sizeof(wchar_t);
 	wprintf(str);
@@ -794,100 +867,103 @@ void printhexfn() {
 	wprintf(L"%llX\n", what[0]);
 }
 
+void printintfn() {
+	register uint64_t what asm("rax");
+	//FnRecord* self = find_fn(symbols, L"printint");
+	//int64_t* what = (int64_t*)(data_buff.data + self->args[0]->loc);
+	wprintf(L"%lld\n", what);
+}
+
 void reservefn() {
-	register uint64_t ret asm("rax");
-
-	FnRecord* self = find_fn(symbols, L"reserve");
-	uint64_t* lhs = (uint64_t*)(data_buff.data + self->args[0]->loc);
-
-	uint64_t out = (uint64_t)calloc(lhs[0], 1);
-
-	ret = out;
+	register uint64_t lhs asm("rax");
+	lhs = (uint64_t)calloc(lhs, 1);
 }
 
 void reserve64fn() {
-	register uint64_t ret asm("rax");
-
-	FnRecord* self = find_fn(symbols, L"reserve64");
-	uint64_t* lhs = (uint64_t*)(data_buff.data + self->args[0]->loc);
-
-	uint64_t out = (uint64_t)calloc(lhs[0], 8);
-
-	ret = out;
+	register uint64_t lhs asm("rax");
+	lhs = (uint64_t)calloc(lhs, 8);
 }
 
 void get64fn() {
-	register uint64_t ret asm("rax");
-
-	FnRecord* self = find_fn(symbols, L"get64");
-	uint64_t* arr = (uint64_t*)(data_buff.data + self->args[0]->loc);
-	uint64_t* idx = (uint64_t*)(data_buff.data + self->args[1]->loc);
-
-	ret = ((uint64_t*)(arr[0]))[idx[0]];
+	register uint64_t* arr asm("rax");
+	register uint64_t idx asm("rcx");
+	arr = (uint64_t*)(arr[idx]);
 }
 
 void set64fn() {
-	FnRecord* self = find_fn(symbols, L"set64");
-	uint64_t* arr = (uint64_t*)(data_buff.data + self->args[0]->loc);
-	uint64_t* idx = (uint64_t*)(data_buff.data + self->args[1]->loc);
-	uint64_t* val = (uint64_t*)(data_buff.data + self->args[2]->loc);
-
-	((uint64_t*)(arr[0]))[idx[0]] = val[0];
+	register uint64_t* arr asm("rax");
+	register uint64_t idx asm("rcx");
+	register uint64_t val asm("rdx");
+	arr[idx] = val;
+	arr = (uint64_t*)val;
 }
 
 void getfn() {
-	register uint64_t ret asm("rax");
-
-	FnRecord* self = find_fn(symbols, L"get");
-	uint64_t* arr = (uint64_t*)(data_buff.data + self->args[0]->loc);
-	uint64_t* idx = (uint64_t*)(data_buff.data + self->args[1]->loc);
-
-	ret = ((uint8_t*)(arr[0]))[idx[0]];
+	register uint64_t arr asm("rax");
+	register uint64_t idx asm("rcx");
+	arr = ((uint8_t*)arr)[idx];
 }
 
 void setfn() {
-	FnRecord* self = find_fn(symbols, L"set");
-	uint64_t* arr = (uint64_t*)(data_buff.data + self->args[0]->loc);
-	uint64_t* idx = (uint64_t*)(data_buff.data + self->args[1]->loc);
-	uint64_t* val = (uint64_t*)(data_buff.data + self->args[2]->loc);
-
-	((uint8_t*)(arr[0]))[idx[0]] = val[0];
+	register uint64_t arr asm("rax");
+	register uint64_t idx asm("rcx");
+	register uint8_t val asm("rdx");
+	((uint8_t*)arr)[idx] = val;
+	arr = val;
 }
 
 void freefn() {
-	FnRecord* self = find_fn(symbols, L"free");
-	uint64_t* arr = (uint64_t*)(data_buff.data + self->args[0]->loc);
-	free((uint8_t*)(arr[0]));
+	register uint8_t* arr asm("rax");
+	free(arr);
 }
 
 void loadfn() {
-	//register uint64_t what asm("rax");
-	FnRecord* self = find_fn(symbols, L"load");
-	uint8_t* what = data_buff.data + self->args[0]->loc;
+	register wchar_t* what asm("rax");
+
 	uint64_t lgt = ((uint64_t*)what)[0];
 	const wchar_t* str = (wchar_t*)what + sizeof(uint64_t) / sizeof(wchar_t);
 
-	mbstate_t state;
+	mbstate_t state = (mbstate_t) {};
 	ssize_t s_lgt = wcsrtombs(NULL, &str, 0, &state) + 1;
 	char* dst = malloc(sizeof(char) * s_lgt);
 	wcsrtombs(dst, &str, s_lgt, &state);
 
 	FILE* old_file = curr_file;
+	wchar_t* old_fname = curr_fname;
+	ssize_t old_line = curr_line;
+	ssize_t old_char = curr_char;
+	void* old_last = last;
+
 	curr_file = fopen(dst, "r"); 
+	fwide(curr_file, 1);
+	curr_fname = str;
+	curr_line = 1;
+	curr_char = 1;
+	last = 0;
 
 	uint8_t quit = 0;
-	compile(&quit);
 
-	if(!quit && last) {
-		uint64_t ret = execute();
-		print(ret);
+	while(!quit) {
+		compile(&quit);
+
+		if(last) {
+			uint64_t ret = execute();
+			print(ret);
+		}
 	}
 
+	fclose(curr_file);
 	curr_file = old_file;
+	curr_fname = old_fname;
+	curr_line = old_line;
+	curr_char = old_char;
+	last = old_last;
+
+	what = 0;
 }
 
 void update(uint8_t force) {
-	if(last != NULL || force) {
+	if(last != 0 || force) {
 		if(mprotect(code, code_end - code, PROT_READ | PROT_WRITE) == -1) {
 			ERROR(L"mprotect to PROT_RW failed\n");
 		}
@@ -923,15 +999,16 @@ void update(uint8_t force) {
 }
 
 uint64_t execute() {
+	codebyte(0xc3);
 	update(0);
 	if(mprotect(code, code_end - code, PROT_EXEC) == -1) {
 		ERROR(L"mprotect to PROT_EXEC failed\n");
 	}
 
-	void*(*fn)() = (void*(*)())codeptr;
-	uint64_t ret = (uint64_t)fn();
-
+	void* thisptr = codeptr;
 	codeptr += (code_buff.lgt - (ssize_t)last);
+	void*(*fn)() = (void*(*)())thisptr;
+	uint64_t ret = (uint64_t)fn();
 
 	return ret;
 }
@@ -941,6 +1018,7 @@ void init_compiler() {
 
 	register_fn(L"print", (void*(*)())printfn, 1, (wchar_t*[1]){L"what"});
 	register_fn(L"printhex", (void*(*)())printhexfn, 1, (wchar_t*[1]){L"what"});
+	register_fn(L"printint", (void*(*)())printintfn, 1, (wchar_t*[1]){L"what"});
 	register_fn(L"load", (void*(*)())loadfn, 1, (wchar_t*[1]){L"what"});
 
 	register_fn(L"%", (void*(*)())modfn, 2, (wchar_t*[2]){L"lhs", L"rhs"});
@@ -948,6 +1026,9 @@ void init_compiler() {
 	register_fn(L"*", (void*(*)())mulfn, 2, (wchar_t*[2]){L"lhs", L"rhs"});
 	register_fn(L"-", (void*(*)())subfn, 2, (wchar_t*[2]){L"lhs", L"rhs"});
 	register_fn(L"+", (void*(*)())addfn, 2, (wchar_t*[2]){L"lhs", L"rhs"});
+	register_fn(L"=", (void*(*)())eqfn, 2, (wchar_t*[2]){L"lhs", L"rhs"});
+	register_fn(L">", (void*(*)())gtfn, 2, (wchar_t*[2]){L"lhs", L"rhs"});
+	register_fn(L"<", (void*(*)())ltfn, 2, (wchar_t*[2]){L"lhs", L"rhs"});
 
 	register_fn(L"reserve", (void*(*)())reservefn, 1, (wchar_t*[1]){L"what"});
 	register_fn(L"reserve64", (void*(*)())reserve64fn, 1, (wchar_t*[1]){L"what"});

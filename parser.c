@@ -4,6 +4,8 @@ ssize_t curr_line = 1;
 ssize_t curr_char = 1;
 
 FILE* curr_file;
+wchar_t* curr_fname;
+wchar_t* fname_repl = L"<input>";
 
 CharBuff program_strings = {};
 ASTBuff ast_buff = {};
@@ -31,7 +33,7 @@ ssize_t readtok(FILE* fd, wchar_t* buff, ssize_t max) {
 
 	while(1) {
 		wchar_t next = fgetwc(fd);
-		if(next == WEOF) { break; }
+		if(next == WEOF || feof(fd)) { break; }
 
 		if(next == '\n') { curr_line++; curr_char = 1; }
 		else { curr_char++; }
@@ -153,17 +155,11 @@ void push_token(wchar_t* str, ssize_t lgt, ssize_t ch, ssize_t lin) {
 }
 
 AST* try_rule(wchar_t* rule) {
-#ifdef DEBUG
-	wprintf(L"Trying rule %ls...\n", rule);
-#endif
 	ssize_t this_token = current_token;
 	ssize_t ast_lgt = ast_buff.lgt;
 
 	AST* ret = do_rule(&rules, rule);
 	if(!ret) {
-#ifdef DEBUG
-	wprintf(L"Rule %ls FAIL\n", rule);
-#endif
 		current_token = this_token;
 		ASTBuff_pop(&ast_buff, ast_buff.lgt - ast_lgt);
 	}
@@ -305,49 +301,6 @@ AST* name() {
 	return ret;
 }
 
-//AST* str() {
-//	AST* ret = ASTBuff_push(&ast_buff, 1);
-//	Token* tok = peek_token();
-//	uint64_t str_lgt = 8 / sizeof(wchar_t);
-//	wchar_t* str = NULL;
-//	ssize_t lin = tok->lin;
-//	ssize_t ch = tok->ch;
-//
-//	if(tok->str[0] == L'"') {
-//		next_token();
-//		ssize_t lgt = wcslen(tok->str)-2;
-//		uint64_t str_mark = str_lgt;
-//		str_lgt += lgt;
-//		str = realloc(str, str_lgt);
-//		wcscpy(str + str_mark, tok->str+1);
-//		wchar_t last_char = tok->str[lgt];
-//
-//		while(tok && last_char != L'"') {
-//			tok = next_token();
-//			lgt = wcslen(tok->str)-1;
-//			str_mark = str_lgt+1;
-//			str_lgt += lgt;
-//			wprintf(L"Old size = %d, New size = %d\n", str_mark, str_lgt);
-//			str = realloc(str, str_lgt);
-//			wprintf(L"REALLOC OK\n");
-//			wprintf(L"COPYING %ls\n", tok->str);
-//			wcscpy(str + str_mark, tok->str);
-//			wprintf(L"RESULT %ls\n", str + 2);
-//			last_char = tok->str[lgt-1];
-//		}
-//	} else { return NULL; }
-//	if(!tok) { return NULL; }
-//	str[str_lgt-1] = L'\0'; // last "char" is the final '"' marker. Erase for \0 instead.
-//	((uint64_t*)str)[0] = str_lgt - 8 / sizeof(wchar_t);
-//	wprintf(L"Got str of lgt %d (= %d) : '%ls'\n", str_lgt, ((uint64_t*)str)[0], str+2);
-//	ret->data = str;
-//	ret->lin = lin;
-//	ret->ch = ch;
-//	ret->type = ast_str;
-//
-//	return ret;
-//}
-
 AST* number() {
 	AST* ret = ASTBuff_push(&ast_buff, 1);
 
@@ -428,13 +381,16 @@ AST* infix() {
 	AST* lhs = try_rule(L"expr");
 	if(!lhs) { return NULL; }
 	Token* maybe_op = next_token();
-	if(maybe_op->size != 1) { return NULL; }
+	if(!maybe_op || maybe_op->size != 1) { return NULL; }
 	switch(maybe_op->str[0]) {
 		case L'*':
 		case L'/':
 		case L'-':
 		case L'+':
 		case L'%':
+		case L'=':
+		case L'<':
+		case L'>':
 			break;
 		default:
 			return NULL;
@@ -564,7 +520,7 @@ AST* stmt() {
 
 check_sc: {
 		Token* tok = peek_token();
-		if(wcscmp(tok->str, L";") == 0) {
+		if(tok && wcscmp(tok->str, L";") == 0) {
 			next_token();
 			return ret;
 		} else {

@@ -18,6 +18,7 @@ uint8_t quit = 0;
 
 int main() {
 	curr_file = stdin;
+	curr_fname = fname_repl;
 
 	setlocale(LC_ALL, "en_US.utf8");
 	ByteBuff_push(&code_buff, 1); // hack to start 'last' at 1 if we do compile
@@ -45,11 +46,6 @@ int main() {
 			print(ret);
 		}
 	}
-
-//	for(int i = 0; i < tokens.lgt; i++) {
-//		wprintf(L"%ls ", tokens.data[i].str);
-//	}
-//	wprintf(L"\n");
 
 	return 0;
 }
